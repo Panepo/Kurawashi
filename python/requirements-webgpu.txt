@@ -1,0 +1,2 @@
+numpy
+onnxruntime-webgpu==1.27.0
