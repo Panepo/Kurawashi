@@ -76,6 +76,17 @@ class LLMInference:
             json.dumps(messages), template_str=self._chat_template, add_generation_prompt=True
         )
 
+    def chat_with_tools(
+        self, messages: list[dict[str, object]], tools: list[dict[str, object]],
+        max_new_tokens: int = 512, temperature: float = 0,
+    ) -> str:
+        """Render structured messages and tool definitions using the model's template."""
+        prompt = self._tokenizer.apply_chat_template(
+            json.dumps(messages), template_str=self._chat_template,
+            tools=json.dumps(tools), add_generation_prompt=True,
+        )
+        return self.generate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+
     def generate(
         self, prompt: str, max_new_tokens: int = 512, temperature: float = 0.7,
         top_p: float = 0.9, top_k: int = 50,
