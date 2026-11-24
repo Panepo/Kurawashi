@@ -33,10 +33,14 @@ _INSTRUCTIONS = (
     "extract a license plate or driver license number. For messages unrelated to those "
     "tools, respond naturally and conversationally without calling a tool. "
     "Choose query_license_plate for a plate or query_driver_license for a driver license. "
+    "Call the appropriate tool separately for each number requested, including multiple "
+    "numbers of the same type. "
     "Pass number_text as the exact words or characters from the user's message, "
     "including every letter and digit, not a rewritten or inferred number. "
     "For example, for 'plate alfa bravo charlie 123 in California', number_text is "
     "'alfa bravo charlie 123' and state is 'California'. "
+    "For '2 plates DEF456 and alice boy david xray 222', call query_license_plate twice: "
+    "once with number_text 'DEF456' and once with number_text 'alice boy david xray 222'. "
     "Pass state only if explicitly stated. "
     "If the information is missing or ambiguous, ask for clarification. "
     "Do not invent information."
@@ -206,7 +210,7 @@ def _assert_complete_number(value: str, source: str, alphabet: Mapping[str, str]
 class _RunState:
     source: str
     messages: list[Message]
-    call: Content | None = None
+    calls: list[Content] = field(default_factory=list)
     results: list[dict[str, str | None]] = field(default_factory=list)
     answer: str = ""
     clarification: str = ""
@@ -225,13 +229,11 @@ class _AgentExecutor(Executor):
             raise ValueError("Expected exactly one assistant message.")
         message = response.messages[0]
         calls = [content for content in message.contents if content.type == "function_call"]
-        if len(calls) > 1:
-            raise ValueError("Only one tool call per model response is supported.")
-        if calls and len(state.results) >= self._max_tool_calls:
+        if len(state.results) + len(calls) > self._max_tool_calls:
             raise ValueError("Maximum tool-call count exceeded.")
         await ctx.send_message(replace(
             state, messages=[*state.messages, message],
-            call=calls[0] if calls else None, answer=message.text,
+            calls=calls, answer=message.text,
         ))
 
 
@@ -243,8 +245,15 @@ class _ToolExecutor(Executor):
 
     @handler
     async def handle(self, state: _RunState, ctx: WorkflowContext[_RunState]) -> None:
-        call = state.call
-        if call is None or call.name not in self._tools or not call.call_id:
+        while state.calls and not state.clarification:
+            state = self._execute_call(state)
+        await ctx.send_message(state)
+
+    def _execute_call(self, state: _RunState) -> _RunState:
+        if not state.calls:
+            raise ValueError("Expected a tool call.")
+        call = state.calls[0]
+        if call.name not in self._tools or not call.call_id:
             raise ValueError("Model requested an unknown or disabled tool.")
         args = call.arguments
         allowed = {"number_text", "state"} if call.name == "query_license_plate" else {"number_text"}
@@ -264,11 +273,10 @@ class _ToolExecutor(Executor):
                 f"Please resend your request with the {license_type} number, "
                 "using the exact characters or spoken words."
             )
-            await ctx.send_message(replace(
+            return replace(
                 state, messages=[*state.messages, Message("assistant", [Content.from_text(clarification)])],
-                call=None, clarification=clarification,
-            ))
-            return
+                calls=[], clarification=clarification,
+            )
         if call.name == "query_license_plate":
             region = args.get("state")
             if region is not None:
@@ -284,10 +292,10 @@ class _ToolExecutor(Executor):
         tool_message = Message("tool", [Content.from_function_result(
             call.call_id, result=result
         )])
-        await ctx.send_message(replace(
+        return replace(
             state, results=[*state.results, result],
-            messages=[*state.messages, tool_message], call=None,
-        ))
+            messages=[*state.messages, tool_message], calls=state.calls[1:],
+        )
 
 
 class _OutputExecutor(Executor):
@@ -299,8 +307,7 @@ class _OutputExecutor(Executor):
         if state.clarification:
             output = state.clarification
         elif state.results:
-            result = state.results[0] if len(state.results) == 1 else state.results
-            output = json.dumps(result, ensure_ascii=False)
+            output = json.dumps(state.results, ensure_ascii=False)
         elif state.answer:
             output = state.answer
         else:
@@ -341,8 +348,8 @@ class AgentGraph:
         tool = _ToolExecutor(set(tools), alphabet)
         output = _OutputExecutor()
         builder = WorkflowBuilder(start_executor=agent, max_iterations=2 * max_calls + 3)
-        builder.add_edge(agent, tool, condition=lambda state: state.call is not None)
-        builder.add_edge(agent, output, condition=lambda state: state.call is None)
+        builder.add_edge(agent, tool, condition=lambda state: bool(state.calls))
+        builder.add_edge(agent, output, condition=lambda state: not state.calls)
         builder.add_edge(tool, agent, condition=lambda state: not state.clarification)
         builder.add_edge(tool, output, condition=lambda state: bool(state.clarification))
         self._workflow = builder.build()

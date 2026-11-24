@@ -59,7 +59,7 @@ def test_tool_round_trip(
 ) -> None:
     backend = FakeBackend([call(name, arguments), "Done."])
     result = asyncio.run(AgentGraph(backend).run(message))
-    assert json.loads(result) == expected
+    assert json.loads(result) == [expected]
     assert {tool["name"] for tool in backend.tools} == {
         "query_license_plate", "query_driver_license"
     }
@@ -78,6 +78,29 @@ def test_multiple_tool_calls_return_each_result() -> None:
         {"license_plate_number": "ABC123", "state": None},
         {"driver_license_number": "D123"},
     ]
+
+
+def test_multiple_calls_in_one_response_are_processed_before_model_continues() -> None:
+    first = {"number_text": "ABC123"}
+    second = {"number_text": "alice boy david xray 222"}
+    backend = FakeBackend([
+        call("query_license_plate", first) + call("query_license_plate", second),
+        "Done.",
+    ])
+    result = asyncio.run(AgentGraph(backend).run(
+        "2 plate ABC123 and alice boy david xray 222"
+    ))
+    expected = [
+        {"license_plate_number": "ABC123", "state": None},
+        {"license_plate_number": "ABDX222", "state": None},
+    ]
+    assert json.loads(result) == expected
+    assert len(backend.messages) == 2
+    assert backend.messages[1][-3]["tool_calls"] == [
+        {"name": "query_license_plate", "arguments": first},
+        {"name": "query_license_plate", "arguments": second},
+    ]
+    assert [json.loads(str(message["content"])) for message in backend.messages[1][-2:]] == expected
 
 
 def test_clarification_is_returned_without_a_tool_call() -> None:
@@ -127,6 +150,17 @@ def test_missing_number_after_result_requests_clarification() -> None:
     assert len(backend.messages) == 2
 
 
+def test_invalid_number_in_batch_requests_clarification() -> None:
+    backend = FakeBackend([
+        call("query_license_plate", {"number_text": "ABC123"})
+        + call("query_driver_license", {}),
+    ])
+    result = asyncio.run(AgentGraph(backend).run("Plate ABC123 and driver license"))
+    assert "driver license" in result.lower()
+    assert "number" in result.lower()
+    assert len(backend.messages) == 1
+
+
 @pytest.mark.parametrize(
     ("reply", "message"),
     [
@@ -161,6 +195,31 @@ def test_tool_call_limit_is_enforced(tmp_path: Path) -> None:
         asyncio.run(AgentGraph(backend, config).run("Plate alfa 123"))
 
 
+def test_tool_call_limit_applies_to_entire_batch(tmp_path: Path) -> None:
+    (tmp_path / "alphabet.json").write_text('{"alfa":"A"}', encoding="utf-8")
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({
+        "tools": ["query_license_plate"], "alphabet_file": "alphabet.json", "max_tool_calls": 1,
+    }), encoding="utf-8")
+    reply = call("query_license_plate", {"number_text": "alfa 123"})
+    backend = FakeBackend([reply + reply])
+    with pytest.raises(ValueError, match="Maximum tool-call count exceeded"):
+        asyncio.run(AgentGraph(backend, config).run("Plate alfa 123"))
+    assert len(backend.messages) == 1
+
+
+def test_tool_call_limit_counts_prior_results_and_new_batch(tmp_path: Path) -> None:
+    (tmp_path / "alphabet.json").write_text('{"alfa":"A"}', encoding="utf-8")
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({
+        "tools": ["query_license_plate"], "alphabet_file": "alphabet.json", "max_tool_calls": 2,
+    }), encoding="utf-8")
+    reply = call("query_license_plate", {"number_text": "alfa 123"})
+    backend = FakeBackend([reply, reply + reply])
+    with pytest.raises(ValueError, match="Maximum tool-call count exceeded"):
+        asyncio.run(AgentGraph(backend, config).run("Plate alfa 123"))
+
+
 def test_editable_alphabet_and_disabled_tool(tmp_path: Path) -> None:
     (tmp_path / "alphabet.json").write_text('{"custom":"Z"}', encoding="utf-8")
     config = tmp_path / "config.json"
@@ -168,9 +227,9 @@ def test_editable_alphabet_and_disabled_tool(tmp_path: Path) -> None:
         "tools": ["query_license_plate"], "alphabet_file": "alphabet.json", "max_tool_calls": 2,
     }), encoding="utf-8")
     backend = FakeBackend([call("query_license_plate", {"number_text": "custom 123"}), "Done."])
-    assert json.loads(asyncio.run(AgentGraph(backend, config).run("Plate custom 123"))) == {
+    assert json.loads(asyncio.run(AgentGraph(backend, config).run("Plate custom 123"))) == [{
         "license_plate_number": "Z123", "state": None,
-    }
+    }]
     assert [tool["name"] for tool in backend.tools] == ["query_license_plate"]
 
 

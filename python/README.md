@@ -40,10 +40,10 @@ python .\python\run_agent.py "Query license plate alfa bravo charlie 123 in Cali
 python .\python\run_agent.py "Query driver license D1234567."
 ```
 
-Successful tool results are JSON, for example
-`{"license_plate_number": "ABC123", "state": "California"}` or
-`{"driver_license_number": "D1234567"}`. An unspecified plate state is `null`;
-when multiple tools are called, results are returned in a JSON array. The agent
+Successful tool results are always returned in a JSON array, for example
+`[{"license_plate_number": "ABC123", "state": "California"}]` or
+`[{"driver_license_number": "D1234567"}]`. Multiple calls produce multiple
+array entries in call order. An unspecified plate state is `null`. The agent
 may instead ask for clarification. Invalid, invented, or potentially incomplete
 numbers trigger a clarification rather than a guessed result; other invalid tool
 arguments cause an error. Review results
