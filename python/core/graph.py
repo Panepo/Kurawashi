@@ -29,7 +29,9 @@ class ToolBackend(Protocol):
 
 
 _INSTRUCTIONS = (
-    "Extract license information from the user's message using the available tools. "
+    "You are a helpful assistant. Use the available tools only when the user asks to "
+    "extract a license plate or driver license number. For messages unrelated to those "
+    "tools, respond naturally and conversationally without calling a tool. "
     "Choose query_license_plate for a plate or query_driver_license for a driver license. "
     "Pass number_text as the exact words or characters from the user's message, "
     "including every letter and digit, not a rewritten or inferred number. "

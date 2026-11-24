@@ -87,6 +87,15 @@ def test_clarification_is_returned_without_a_tool_call() -> None:
     )
 
 
+def test_unrelated_message_gets_a_normal_response() -> None:
+    response = "Good morning! How can I help?"
+    backend = FakeBackend([response])
+
+    assert asyncio.run(AgentGraph(backend).run("good morning")) == response
+    assert "respond naturally and conversationally" in str(backend.messages[0][0]["content"])
+    assert "tool_calls" not in backend.messages[0][-1]
+
+
 @pytest.mark.parametrize(
     ("name", "message", "arguments", "expected"),
     [
