@@ -88,12 +88,41 @@ def test_clarification_is_returned_without_a_tool_call() -> None:
 
 
 @pytest.mark.parametrize(
+    ("name", "message", "arguments", "expected"),
+    [
+        ("query_driver_license", "driver license", {}, "driver license"),
+        ("query_driver_license", "driver license", {"number_text": None}, "driver license"),
+        ("query_license_plate", "plate", {"number_text": "  "}, "license plate"),
+        ("query_driver_license", "driver license", {"number_text": "driver license"}, "driver license"),
+        ("query_license_plate", "license plate", {"number_text": "plate alfa bravo charlie 123"}, "license plate"),
+    ],
+)
+def test_missing_number_requests_clarification(
+    name: str, message: str, arguments: dict[str, object], expected: str,
+) -> None:
+    backend = FakeBackend([call(name, arguments)])
+    result = asyncio.run(AgentGraph(backend).run(message))
+    assert expected in result.lower()
+    assert "number" in result.lower()
+    assert len(backend.messages) == 1
+
+
+def test_missing_number_after_result_requests_clarification() -> None:
+    backend = FakeBackend([
+        call("query_license_plate", {"number_text": "ABC123"}),
+        call("query_driver_license", {}),
+    ])
+    result = asyncio.run(AgentGraph(backend).run("Plate ABC123 and driver license"))
+    assert "driver license" in result.lower()
+    assert "number" in result.lower()
+    assert len(backend.messages) == 2
+
+
+@pytest.mark.parametrize(
     ("reply", "message"),
     [
-        (call("query_license_plate", {"number_text": "ABC123"}), "Plate XYZ123"),
         (call("query_license_plate", {"number_text": "ABC123", "state": "Nevada"}), "Plate ABC123"),
         (call("query_license_plate", {"number_text": "ABC123", "state": "123"}), "Plate ABC123 in 123"),
-        (call("query_driver_license", {"number_text": "unknown words"}), "Driver license unknown words"),
         (call("query_driver_license", {"number_text": "D123", "state": "Ohio"}), "Driver D123 in Ohio"),
         (call("unregistered", {"number_text": "ABC123"}), "Plate ABC123"),
     ],
@@ -149,10 +178,21 @@ def test_spoken_digits_and_xray() -> None:
     assert _normalise_number("x-ray one two 003", {"x-ray": "X"}) == "X12003"
 
 
-def test_partial_number_is_rejected() -> None:
-    backend = FakeBackend([call("query_license_plate", {"number_text": "alfa bravo charlie"})])
-    with pytest.raises(ValueError, match="Number may be incomplete"):
-        asyncio.run(AgentGraph(backend).run("Plate alfa bravo charlie 123"))
+@pytest.mark.parametrize(
+    ("name", "number", "message", "reason"),
+    [
+        ("query_license_plate", "ABC123", "Plate XYZ123", "verbatim"),
+        ("query_driver_license", "unknown words", "Driver license unknown words", "Ambiguous"),
+        ("query_license_plate", "alfa bravo charlie", "Plate alfa bravo charlie 123", "incomplete"),
+    ],
+)
+def test_invalid_number_requests_clarification(
+    name: str, number: str, message: str, reason: str,
+) -> None:
+    backend = FakeBackend([call(name, {"number_text": number})])
+    result = asyncio.run(AgentGraph(backend).run(message))
+    assert reason in result
+    assert "number" in result.lower()
 
 
 def test_llm_passes_tools_and_structured_messages_to_template() -> None:

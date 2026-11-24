@@ -207,6 +207,7 @@ class _RunState:
     call: Content | None = None
     results: list[dict[str, str | None]] = field(default_factory=list)
     answer: str = ""
+    clarification: str = ""
 
 
 class _AgentExecutor(Executor):
@@ -248,11 +249,24 @@ class _ToolExecutor(Executor):
         if not isinstance(args, Mapping) or set(args) - allowed:
             raise ValueError("Invalid tool arguments.")
         number = args.get("number_text")
-        if not isinstance(number, str):
-            raise ValueError("Tool requires a number_text string.")
-        _assert_in_source(number, state.source, "number_text")
-        _assert_complete_number(number, state.source, self._alphabet)
-        normalised = _normalise_number(number, self._alphabet)
+        try:
+            if not isinstance(number, str) or not number.strip():
+                raise ValueError("The number is missing.")
+            _assert_in_source(number, state.source, "number_text")
+            _assert_complete_number(number, state.source, self._alphabet)
+            normalised = _normalise_number(number, self._alphabet)
+        except ValueError as exc:
+            license_type = "license plate" if call.name == "query_license_plate" else "driver license"
+            clarification = (
+                f"I couldn't determine the {license_type} number: {exc} "
+                f"Please resend your request with the {license_type} number, "
+                "using the exact characters or spoken words."
+            )
+            await ctx.send_message(replace(
+                state, messages=[*state.messages, Message("assistant", [Content.from_text(clarification)])],
+                call=None, clarification=clarification,
+            ))
+            return
         if call.name == "query_license_plate":
             region = args.get("state")
             if region is not None:
@@ -280,7 +294,9 @@ class _OutputExecutor(Executor):
 
     @handler
     async def handle(self, state: _RunState, ctx: WorkflowContext[None, str]) -> None:
-        if state.results:
+        if state.clarification:
+            output = state.clarification
+        elif state.results:
             result = state.results[0] if len(state.results) == 1 else state.results
             output = json.dumps(result, ensure_ascii=False)
         elif state.answer:
@@ -325,7 +341,8 @@ class AgentGraph:
         builder = WorkflowBuilder(start_executor=agent, max_iterations=2 * max_calls + 3)
         builder.add_edge(agent, tool, condition=lambda state: state.call is not None)
         builder.add_edge(agent, output, condition=lambda state: state.call is None)
-        builder.add_edge(tool, agent)
+        builder.add_edge(tool, agent, condition=lambda state: not state.clarification)
+        builder.add_edge(tool, output, condition=lambda state: bool(state.clarification))
         self._workflow = builder.build()
 
     async def run(self, message: str) -> str:

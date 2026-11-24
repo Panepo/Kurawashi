@@ -45,9 +45,13 @@ Successful tool results are JSON, for example
 `{"driver_license_number": "D1234567"}`. An unspecified plate state is `null`;
 when multiple tools are called, results are returned in a JSON array. The agent
 may instead ask for clarification. Invalid, invented, or potentially incomplete
-tool arguments cause an error rather than a guessed result. Review results
+numbers trigger a clarification rather than a guessed result; other invalid tool
+arguments cause an error. Review results
 before relying on them: model tool selection and extraction are not guaranteed,
 and the checks cannot detect every omitted or incorrect value.
+
+When a required number is missing, resend the request with the license type and
+number; interactive agent requests are processed independently.
 
 The configured tools and call limit are in `core\tools.json`; the editable NATO
 alphabet mapping is in `core\nato_alphabet.json`. Use `--config` to select

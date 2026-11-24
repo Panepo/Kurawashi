@@ -16,6 +16,10 @@ from core.llm import LLMInference
 )
 def test_real_aion_tool_calls() -> None:
     graph = AgentGraph(LLMInference("aion", device="webgpu"))
+    for request in ("driver license", "license plate"):
+        clarification = asyncio.run(graph.run(request))
+        assert request in clarification.lower()
+        assert "number" in clarification.lower()
     plate = asyncio.run(graph.run("Query license plate alfa bravo charlie 123 in California."))
     plate_without_state = asyncio.run(graph.run("Query license plate alfa bravo charlie 123."))
     driver = asyncio.run(graph.run("Query driver license D1234567."))
