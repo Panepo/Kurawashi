@@ -50,7 +50,7 @@ The workflow is built using the [Agent Framework](https://github.com/) and consi
 
 Priority order:
 1. Clarification message (if validation failed)
-2. JSON array of extracted results (if tools were called)
+2. JSON array of tool names and parameters (if tools were called)
 3. Conversational response (if no tools were needed)
 
 ## Configuration
@@ -113,7 +113,7 @@ User Message
 1. AgentExecutor → LLM → Tool call: `query_license_plate(number_text="alfa bravo charlie 123", state="California")`
 2. ToolExecutor validates and normalizes → `ABC123`
 3. ToolExecutor → AgentExecutor (no more calls) → OutputExecutor
-4. **Output:** `[{"license_plate_number": "ABC123", "state": "California"}]`
+4. **Output:** `[{"tool": "query_license_plate", "parameters": {"number_text": "alfa bravo charlie 123", "state": "CA"}}]`
 
 ### Example 2: Multiple Plates
 
@@ -128,7 +128,7 @@ User Message
 3. AgentExecutor → LLM → Tool call: `query_license_plate(number_text="alice boy david xray 222")`
 4. ToolExecutor normalizes → `ABDX222`
 5. ToolExecutor → AgentExecutor → OutputExecutor
-6. **Output:** `[{"license_plate_number": "DEF456"}, {"license_plate_number": "ABDX222"}]`
+6. **Output:** `[{"tool": "query_license_plate", "parameters": {"number_text": "DEF456"}}, {"tool": "query_license_plate", "parameters": {"number_text": "alice boy david xray 222"}}]`
 
 ### Example 3: Ambiguous Number
 
@@ -152,7 +152,9 @@ The agent operates under these constraints:
 - For unrelated messages, respond conversationally without calling tools
 - Pass `number_text` as the **exact** words/characters from the user's message (not inferred or rewritten)
 - Call tools **separately** for each number (even multiple of the same type)
-- Pass `state` only if explicitly mentioned
+- Pass `state` when a state or supported city is explicitly mentioned
+- Recognize standard two-letter U.S. state abbreviations, including when they appear before the license type
+- Return U.S. states as USPS abbreviations; resolve supported city names using the offline city list, and ask for clarification when a city is unknown or ambiguous
 - Ask for clarification if information is missing or ambiguous
 - **Never invent information**
 

@@ -29,26 +29,37 @@ The runner defaults to Aion on WebGPU. Use `--device cpu` to run on the CPU.
 Interactive chat streams replies, keeps conversation history, and exits when
 you type `exit`. Run `python .\python\run_llm.py --help` for all options.
 
-## License extraction agent
+## License and driver-name extraction agent
 
-The Agent Framework workflow extracts license information from text or
+The Agent Framework workflow extracts license information and driver names from text or
 transcribed speech; it does not perform an external lookup or audio
 transcription. For example:
 
 ```powershell
 python .\python\run_agent.py "Query license plate alfa bravo charlie 123 in California."
 python .\python\run_agent.py "Query driver license D1234567."
+python .\python\run_agent.py "Query driver John Smith."
 ```
 
-Successful tool results are always returned in a JSON array, for example
-`[{"license_plate_number": "ABC123", "state": "California"}]` or
-`[{"driver_license_number": "D1234567"}]`. Multiple calls produce multiple
-array entries in call order. An unspecified plate state is `null`. The agent
+Successful tool calls are returned in a JSON array with the tool name and
+parameters, for example
+`[{"tool": "query_driver_by_name", "parameters": {"first_name": "John", "last_name": "Smith"}}]`.
+Multiple calls produce multiple array entries in call order. The agent
 may instead ask for clarification. Invalid, invented, or potentially incomplete
 numbers trigger a clarification rather than a guessed result; other invalid tool
 arguments cause an error. Review results
 before relying on them: model tool selection and extraction are not guaranteed,
 and the checks cannot detect every omitted or incorrect value.
+State names are returned as USPS abbreviations. The agent resolves a curated
+offline set of U.S. city names to states (for example, Seattle to `WA`); unknown
+or ambiguous cities require the user to provide a state.
+
+The `query_driver_by_name` tool requires `first_name` and `last_name`; its call
+record includes those parameters.
+Names retain their spelling, including compound names, apostrophes, and hyphens.
+Missing or invalid names trigger clarification; an ambiguous first/last name
+split should also be clarified rather than guessed. This tool extracts names
+only; it does not retrieve driver records.
 
 When a required number is missing, resend the request with the license type and
 number; interactive agent requests are processed independently.

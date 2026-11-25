@@ -20,8 +20,10 @@ from agent_framework import (
     handler,
 )
 
+from tools.query_driver_by_name import query_driver_by_name
 from tools.query_driver_license import query_driver_license
 from tools.query_license_plate import query_license_plate
+from tools.regions import resolve_us_region, us_region_is_mentioned
 
 
 class ToolBackend(Protocol):
@@ -33,24 +35,37 @@ class ToolBackend(Protocol):
 
 _INSTRUCTIONS = (
     "You are a helpful assistant. Use the available tools only when the user asks to "
-    "extract a license plate or driver license number. For messages unrelated to those "
+    "extract a license plate, driver license number, or query a driver by name. For messages unrelated to those "
     "tools, respond naturally and conversationally without calling a tool. "
     "Choose query_license_plate for a plate or query_driver_license for a driver license. "
+    "Choose query_driver_by_name for a driver name. Extract first_name and last_name "
+    "verbatim from the user's message, preserving spelling, punctuation, and compound names. "
+    "For 'query driver John Smith', first_name is 'John' and last_name is 'Smith'. "
+    "If either name is missing or the first/last name split is ambiguous, ask for clarification. "
+    "Call query_driver_by_name separately for each driver requested. "
     "Call the appropriate tool separately for each number requested, including multiple "
     "numbers of the same type. "
     "Pass number_text as the exact words or characters from the user's message, "
     "including every letter and digit, not a rewritten or inferred number. "
     "For example, for 'plate alfa bravo charlie 123 in California', number_text is "
-    "'alfa bravo charlie 123' and state is 'California'. "
+    "'alfa bravo charlie 123' and state is 'California'. For 'driver license D123 in "
+    "California', number_text is 'D123' and state is 'California'. "
+    "Recognize standard two-letter U.S. state abbreviations as states, even when they "
+    "appear before the license type. For 'query WA license plate aaadsdas3231', pass "
+    "number_text 'aaadsdas3231' and state 'WA'. Convert state names to USPS "
+    "abbreviations. For 'query Seattle license plate ABC123', pass state 'Seattle'; "
+    "the application resolves it to 'WA'. For other cities, pass the city name only "
+    "when it is supported and unambiguous; otherwise ask for the state. "
     "For '2 plates DEF456 and alice boy david xray 222', call query_license_plate twice: "
     "once with number_text 'DEF456' and once with number_text 'alice boy david xray 222'. "
-    "Pass state only if explicitly stated. "
+    "Pass state when a state or supported city is explicitly mentioned. "
     "If the information is missing or ambiguous, ask for clarification. "
     "Do not invent information."
 )
 _TOOL_DESCRIPTIONS = {
+    "query_driver_by_name": "Extract a driver's first name and last name from the user message.",
     "query_license_plate": "Extract a license plate and optional state from the user message.",
-    "query_driver_license": "Extract a driver license number from the user message.",
+    "query_driver_license": "Extract a driver license number and optional state from the user message.",
 }
 _DIGITS = {
     "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
@@ -60,17 +75,39 @@ _CALL_PATTERN = re.compile(r"<\|tool_call\|>(.*?)<\|/tool_call\|>", re.DOTALL)
 
 
 def _tool_schema(name: str) -> dict[str, object]:
+    if name == "query_driver_by_name":
+        return {
+            "name": name,
+            "description": _TOOL_DESCRIPTIONS[name],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "first_name": {
+                        "type": "string",
+                        "description": "Exact first name from the user's message.",
+                    },
+                    "last_name": {
+                        "type": "string",
+                        "description": "Exact last name from the user's message.",
+                    },
+                },
+                "required": ["first_name", "last_name"],
+                "additionalProperties": False,
+            },
+        }
     properties: dict[str, object] = {
         "number_text": {
             "type": "string",
             "description": "Exact words or characters for the number from the user's message.",
         }
     }
-    if name == "query_license_plate":
-        properties["state"] = {
-            "type": ["string", "null"],
-            "description": "Exact state mentioned by the user, or null if not mentioned.",
-        }
+    properties["state"] = {
+        "type": ["string", "null"],
+        "description": (
+            "Exact state name, standard two-letter U.S. state abbreviation, or city "
+            "mentioned by the user, or null if no location is mentioned."
+        ),
+    }
     return {
         "name": name,
         "description": _TOOL_DESCRIPTIONS[name],
@@ -190,6 +227,41 @@ def _assert_in_source(value: str, source: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be taken verbatim from the user's message.")
 
 
+def _region_from_request(source: str) -> str | None:
+    leading = re.search(
+        r"\b(?:query|search|find|lookup)\s+(.+?)\s+"
+        r"(?:license\s+plate|plate|driver\s+license)\b",
+        source,
+        re.IGNORECASE,
+    )
+    if leading:
+        candidate = re.sub(r"^(?:(?:in|for|the|a|an)\s+)+", "", leading.group(1).strip(), flags=re.IGNORECASE)
+        if candidate.casefold() not in {"driver", "license"} and not re.search(
+            r"\b(?:driver|license)\b", candidate, re.IGNORECASE
+        ):
+            return candidate.strip(" ,.;:!?")
+    trailing = re.search(
+        r"\b(?:in|from)\s+([A-Za-z][A-Za-z .'-]*?)\s*[,.!?]*$",
+        source,
+        re.IGNORECASE,
+    )
+    return trailing.group(1).strip() if trailing else None
+
+
+def _extract_driver_name(args: Mapping[str, object], source: str) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for field_name in ("first_name", "last_name"):
+        value = args.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} is missing.")
+        value = value.strip()
+        if not re.fullmatch(r"[^\W\d_]+(?:[ '\u2019-][^\W\d_]+)*", value):
+            raise ValueError(f"{field_name} must contain letters, spaces, apostrophes, or hyphens.")
+        _assert_in_source(value, source, field_name)
+        names[field_name] = value
+    return query_driver_by_name(names["first_name"], names["last_name"])
+
+
 def _assert_complete_number(value: str, source: str, alphabet: Mapping[str, str]) -> None:
     pattern = r"(?<!\w)" + re.escape(value.strip()) + r"(?!\w)"
     matches = list(re.finditer(pattern, source, re.IGNORECASE))
@@ -214,7 +286,7 @@ class _RunState:
     source: str
     messages: list[Message]
     calls: list[Content] = field(default_factory=list)
-    results: list[dict[str, str | None]] = field(default_factory=list)
+    results: list[dict[str, object]] = field(default_factory=list)
     answer: str = ""
     clarification: str = ""
 
@@ -259,44 +331,86 @@ class _ToolExecutor(Executor):
         if call.name not in self._tools or not call.call_id:
             raise ValueError("Model requested an unknown or disabled tool.")
         args = call.arguments
-        allowed = {"number_text", "state"} if call.name == "query_license_plate" else {"number_text"}
+        allowed = {"first_name", "last_name"} if call.name == "query_driver_by_name" else {"number_text", "state"}
         if not isinstance(args, Mapping) or set(args) - allowed:
             raise ValueError("Invalid tool arguments.")
-        number = args.get("number_text")
-        try:
-            if not isinstance(number, str) or not number.strip():
-                raise ValueError("The number is missing.")
-            _assert_in_source(number, state.source, "number_text")
-            _assert_complete_number(number, state.source, self._alphabet)
-            normalised = _normalise_number(number, self._alphabet)
-        except ValueError as exc:
-            license_type = "license plate" if call.name == "query_license_plate" else "driver license"
-            clarification = (
-                f"I couldn't determine the {license_type} number: {exc} "
-                f"Please resend your request with the {license_type} number, "
-                "using the exact characters or spoken words."
-            )
-            return replace(
-                state, messages=[*state.messages, Message("assistant", [Content.from_text(clarification)])],
-                calls=[], clarification=clarification,
-            )
-        if call.name == "query_license_plate":
-            region = args.get("state")
+        parameters = dict(args)
+        if call.name == "query_driver_by_name":
+            try:
+                result = _extract_driver_name(args, state.source)
+            except ValueError as exc:
+                clarification = (
+                    f"I couldn't determine the driver's name: {exc} "
+                    "Please resend your request with the driver's first name and last name."
+                )
+                return replace(
+                    state, messages=[*state.messages, Message("assistant", [Content.from_text(clarification)])],
+                    calls=[], clarification=clarification,
+                )
+        else:
+            number = args.get("number_text")
+            try:
+                if not isinstance(number, str) or not number.strip():
+                    raise ValueError("The number is missing.")
+                _assert_in_source(number, state.source, "number_text")
+                _assert_complete_number(number, state.source, self._alphabet)
+                normalised = _normalise_number(number, self._alphabet)
+            except ValueError as exc:
+                license_type = "license plate" if call.name == "query_license_plate" else "driver license"
+                clarification = (
+                    f"I couldn't determine the {license_type} number: {exc} "
+                    f"Please resend your request with the {license_type} number, "
+                    "using the exact characters or spoken words."
+                )
+                return replace(
+                    state, messages=[*state.messages, Message("assistant", [Content.from_text(clarification)])],
+                    calls=[], clarification=clarification,
+                )
+            region = parameters.get("state")
+            source_region = _region_from_request(state.source)
             if region is not None:
                 if not isinstance(region, str):
                     raise ValueError("State must be a string or null.")
-                region = region.strip()
-                if not re.fullmatch(r"[^\W\d_]+(?:[ -][^\W\d_]+)*", region):
-                    raise ValueError("State must contain letters, spaces, or hyphens.")
-                _assert_in_source(region, state.source, "state")
-            result = query_license_plate(normalised, region)
-        else:
-            result = query_driver_license(normalised)
+                if not re.fullmatch(r"[^\W\d_]+(?:[ .'-][^\W\d_]+)*", region.strip()):
+                    raise ValueError("State must contain letters, spaces, apostrophes, hyphens, or periods.")
+                if not re.search(
+                    r"(?<!\w)" + re.escape(region.strip()) + r"(?!\w)",
+                    state.source,
+                    re.IGNORECASE,
+                ):
+                    try:
+                        resolved_region = resolve_us_region(region)
+                        mentioned = us_region_is_mentioned(resolved_region, state.source)
+                    except ValueError:
+                        _assert_in_source(region, state.source, "state")
+                        raise
+                    if not mentioned:
+                        _assert_in_source(region, state.source, "state")
+                    region = resolved_region
+            elif source_region is not None:
+                region = source_region
+            try:
+                if region is not None:
+                    region = resolve_us_region(region)
+                    parameters["state"] = region
+            except ValueError as exc:
+                clarification = (
+                    f"I couldn't determine the state: {exc} "
+                    "Please provide a state abbreviation or an unambiguous supported city."
+                )
+                return replace(
+                    state, messages=[*state.messages, Message("assistant", [Content.from_text(clarification)])],
+                    calls=[], clarification=clarification,
+                )
+            if call.name == "query_license_plate":
+                result = query_license_plate(normalised, region)
+            else:
+                result = query_driver_license(normalised, region)
         tool_message = Message("tool", [Content.from_function_result(
             call.call_id, result=result
         )])
         return replace(
-            state, results=[*state.results, result],
+            state, results=[*state.results, {"tool": call.name, "parameters": parameters}],
             messages=[*state.messages, tool_message], calls=state.calls[1:],
         )
 
@@ -319,11 +433,11 @@ class _OutputExecutor(Executor):
 
 
 class AgentGraph:
-    """Configured local license-extraction workflow."""
+    """Configured local license and driver-name extraction workflow."""
 
     def __init__(self, backend: ToolBackend, config_path: str | Path | None = None) -> None:
         self._backend = backend
-        self.load_config(config_path or Path(__file__).with_name("tools.json"))
+        self.load_config(config_path or Path(__file__).with_name("config.json"))
 
     def load_config(self, path: str | Path) -> None:
         config_path = Path(path)

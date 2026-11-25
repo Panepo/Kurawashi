@@ -1,4 +1,4 @@
-"""Extract license information from a text or transcribed speech message."""
+"""Extract license information or driver names from text or transcribed speech."""
 
 from __future__ import annotations
 

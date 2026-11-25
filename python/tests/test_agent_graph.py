@@ -40,7 +40,7 @@ def call(name: str, arguments: dict[str, object]) -> str:
         (
             "query_license_plate", "Plate alfa bravo charlie 123 in California",
             {"number_text": "alfa bravo charlie 123", "state": "California"},
-            {"license_plate_number": "ABC123", "state": "California"},
+            {"license_plate_number": "ABC123", "state": "CA"},
         ),
         (
             "query_license_plate", "Plate alfa bravo charlie 123",
@@ -48,9 +48,39 @@ def call(name: str, arguments: dict[str, object]) -> str:
             {"license_plate_number": "ABC123", "state": None},
         ),
         (
+            "query_license_plate", "query WA license plate aaadsdas3231",
+            {"number_text": "aaadsdas3231", "state": "WA"},
+            {"license_plate_number": "AAADSDAS3231", "state": "WA"},
+        ),
+        (
+            "query_license_plate", "query California license plate ABC123",
+            {"number_text": "ABC123", "state": "CA"},
+            {"license_plate_number": "ABC123", "state": "CA"},
+        ),
+        (
             "query_driver_license", "Driver license D1234567",
             {"number_text": "D1234567"},
-            {"driver_license_number": "D1234567"},
+            {"driver_license_number": "D1234567", "state": None},
+        ),
+        (
+            "query_driver_license", "Driver license D1234567 in California",
+            {"number_text": "D1234567", "state": "California"},
+            {"driver_license_number": "D1234567", "state": "CA"},
+        ),
+        (
+            "query_driver_by_name", "Query driver John Smith",
+            {"first_name": "John", "last_name": "Smith"},
+            {"first_name": "John", "last_name": "Smith"},
+        ),
+        (
+            "query_driver_by_name", "Query driver Anne-Marie O'Neill",
+            {"first_name": "Anne-Marie", "last_name": "O'Neill"},
+            {"first_name": "Anne-Marie", "last_name": "O'Neill"},
+        ),
+        (
+            "query_driver_by_name", "Driver first name Mary Jane, last name de la Cruz",
+            {"first_name": "Mary Jane", "last_name": "de la Cruz"},
+            {"first_name": "Mary Jane", "last_name": "de la Cruz"},
         ),
     ],
 )
@@ -59,12 +89,99 @@ def test_tool_round_trip(
 ) -> None:
     backend = FakeBackend([call(name, arguments), "Done."])
     result = asyncio.run(AgentGraph(backend).run(message))
-    assert json.loads(result) == [expected]
+    expected_parameters = dict(arguments)
+    if "state" in expected_parameters and expected.get("state") is not None:
+        expected_parameters["state"] = expected["state"]
+    assert json.loads(result) == [{"tool": name, "parameters": expected_parameters}]
     assert {tool["name"] for tool in backend.tools} == {
-        "query_license_plate", "query_driver_license"
+        "query_license_plate", "query_driver_license", "query_driver_by_name"
     }
+    driver_parameters = next(
+        tool["parameters"] for tool in backend.tools if tool["name"] == "query_driver_license"
+    )
+    assert driver_parameters["required"] == ["number_text"]
+    assert "state" in driver_parameters["properties"]
     assert backend.messages[1][-2]["tool_calls"] == [{"name": name, "arguments": arguments}]
     assert json.loads(str(backend.messages[1][-1]["content"])) == expected
+
+
+def test_state_abbreviations_are_mentioned_in_tool_instructions() -> None:
+    backend = FakeBackend([
+        call("query_license_plate", {"number_text": "aaadsdas3231", "state": "WA"}),
+        "Done.",
+    ])
+    asyncio.run(AgentGraph(backend).run("query WA license plate aaadsdas3231"))
+    assert "standard two-letter U.S. state abbreviations" in str(
+        backend.messages[0][0]["content"]
+    )
+    assert "query Seattle license plate" in str(backend.messages[0][0]["content"])
+
+
+def test_city_is_resolved_when_model_omits_state() -> None:
+    backend = FakeBackend([
+        call("query_license_plate", {"number_text": "abc123"}),
+        "Done.",
+    ])
+    result = asyncio.run(AgentGraph(backend).run("query seattle license plate abc123"))
+    assert json.loads(result) == [{
+        "tool": "query_license_plate",
+        "parameters": {"number_text": "abc123", "state": "WA"},
+    }]
+    assert json.loads(str(backend.messages[1][-1]["content"])) == {
+        "license_plate_number": "ABC123", "state": "WA",
+    }
+
+
+@pytest.mark.parametrize(
+    ("city", "reason"),
+    [("Portland", "ambiguous"), ("Everett", "not a supported")],
+)
+def test_ambiguous_or_unknown_city_requests_state(city: str, reason: str) -> None:
+    backend = FakeBackend([call("query_license_plate", {"number_text": "ABC123"})])
+    result = asyncio.run(AgentGraph(backend).run(
+        f"query {city} license plate ABC123"
+    ))
+    assert reason in result.lower()
+    assert "provide a state abbreviation" in result
+    assert len(backend.messages) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"first_name": "John"},
+        {"first_name": None, "last_name": "Smith"},
+        {"first_name": "John", "last_name": "  "},
+        {"first_name": "Jane", "last_name": "Smith"},
+        {"first_name": "John", "last_name": "Smith123"},
+    ],
+)
+def test_invalid_driver_name_requests_clarification(arguments: dict[str, object]) -> None:
+    backend = FakeBackend([call("query_driver_by_name", arguments)])
+    result = asyncio.run(AgentGraph(backend).run("Query driver John Smith"))
+    assert "first name and last name" in result
+    assert len(backend.messages) == 1
+
+
+def test_driver_name_and_license_calls_in_one_batch() -> None:
+    backend = FakeBackend([
+        call("query_driver_by_name", {"first_name": "John", "last_name": "Smith"})
+        + call("query_driver_license", {"number_text": "D123"}),
+        "Done.",
+    ])
+    result = asyncio.run(AgentGraph(backend).run("Query driver John Smith and driver license D123"))
+    assert json.loads(result) == [
+        {
+            "tool": "query_driver_by_name",
+            "parameters": {"first_name": "John", "last_name": "Smith"},
+        },
+        {
+            "tool": "query_driver_license",
+            "parameters": {"number_text": "D123"},
+        },
+    ]
+    assert len(backend.messages) == 2
 
 
 def test_multiple_tool_calls_return_each_result() -> None:
@@ -75,8 +192,8 @@ def test_multiple_tool_calls_return_each_result() -> None:
     ])
     result = asyncio.run(AgentGraph(backend).run("Plate ABC123, driver license D123"))
     assert json.loads(result) == [
-        {"license_plate_number": "ABC123", "state": None},
-        {"driver_license_number": "D123"},
+        {"tool": "query_license_plate", "parameters": {"number_text": "ABC123"}},
+        {"tool": "query_driver_license", "parameters": {"number_text": "D123"}},
     ]
 
 
@@ -90,17 +207,21 @@ def test_multiple_calls_in_one_response_are_processed_before_model_continues() -
     result = asyncio.run(AgentGraph(backend).run(
         "2 plate ABC123 and alice boy david xray 222"
     ))
-    expected = [
+    expected_output = [
+        {"tool": "query_license_plate", "parameters": first},
+        {"tool": "query_license_plate", "parameters": second},
+    ]
+    expected_results = [
         {"license_plate_number": "ABC123", "state": None},
         {"license_plate_number": "ABDX222", "state": None},
     ]
-    assert json.loads(result) == expected
+    assert json.loads(result) == expected_output
     assert len(backend.messages) == 2
     assert backend.messages[1][-3]["tool_calls"] == [
         {"name": "query_license_plate", "arguments": first},
         {"name": "query_license_plate", "arguments": second},
     ]
-    assert [json.loads(str(message["content"])) for message in backend.messages[1][-2:]] == expected
+    assert [json.loads(str(message["content"])) for message in backend.messages[1][-2:]] == expected_results
 
 
 def test_clarification_is_returned_without_a_tool_call() -> None:
@@ -166,7 +287,7 @@ def test_invalid_number_in_batch_requests_clarification() -> None:
     [
         (call("query_license_plate", {"number_text": "ABC123", "state": "Nevada"}), "Plate ABC123"),
         (call("query_license_plate", {"number_text": "ABC123", "state": "123"}), "Plate ABC123 in 123"),
-        (call("query_driver_license", {"number_text": "D123", "state": "Ohio"}), "Driver D123 in Ohio"),
+        (call("query_driver_license", {"number_text": "D123", "state": "Ohio"}), "Driver D123"),
         (call("unregistered", {"number_text": "ABC123"}), "Plate ABC123"),
     ],
 )
@@ -228,7 +349,7 @@ def test_editable_alphabet_and_disabled_tool(tmp_path: Path) -> None:
     }), encoding="utf-8")
     backend = FakeBackend([call("query_license_plate", {"number_text": "custom 123"}), "Done."])
     assert json.loads(asyncio.run(AgentGraph(backend, config).run("Plate custom 123"))) == [{
-        "license_plate_number": "Z123", "state": None,
+        "tool": "query_license_plate", "parameters": {"number_text": "custom 123"},
     }]
     assert [tool["name"] for tool in backend.tools] == ["query_license_plate"]
 

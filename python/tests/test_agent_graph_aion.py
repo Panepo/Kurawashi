@@ -25,11 +25,24 @@ def test_real_aion_tool_calls() -> None:
     driver = asyncio.run(graph.run("Query driver license D1234567."))
     spoken_driver = asyncio.run(graph.run("Query driver license delta one two three."))
     two_plates = asyncio.run(graph.run("2 plate ABC123 and alice boy david xray 222"))
-    assert json.loads(plate) == [{"license_plate_number": "ABC123", "state": "California"}]
-    assert json.loads(plate_without_state) == [{"license_plate_number": "ABC123", "state": None}]
-    assert json.loads(driver) == [{"driver_license_number": "D1234567"}]
-    assert json.loads(spoken_driver) == [{"driver_license_number": "D123"}]
+    assert json.loads(plate) == [{
+        "tool": "query_license_plate",
+        "parameters": {"number_text": "alfa bravo charlie 123", "state": "CA"},
+    }]
+    assert json.loads(plate_without_state) == [{
+        "tool": "query_license_plate",
+        "parameters": {"number_text": "alfa bravo charlie 123"},
+    }]
+    assert json.loads(driver) == [{
+        "tool": "query_driver_license", "parameters": {"number_text": "D1234567"},
+    }]
+    assert json.loads(spoken_driver) == [{
+        "tool": "query_driver_license", "parameters": {"number_text": "delta one two three"},
+    }]
     assert json.loads(two_plates) == [
-        {"license_plate_number": "ABC123", "state": None},
-        {"license_plate_number": "ABDX222", "state": None},
+        {"tool": "query_license_plate", "parameters": {"number_text": "ABC123"}},
+        {
+            "tool": "query_license_plate",
+            "parameters": {"number_text": "alice boy david xray 222"},
+        },
     ]
