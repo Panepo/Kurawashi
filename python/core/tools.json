@@ -3,6 +3,6 @@
     "query_license_plate",
     "query_driver_license"
   ],
-  "alphabet_file": "nato_alphabet.json",
+  "alphabet_file": "../tools/nato_alphabet.json",
   "max_tool_calls": 3
 }

@@ -54,7 +54,7 @@ When a required number is missing, resend the request with the license type and
 number; interactive agent requests are processed independently.
 
 The configured tools and call limit are in `core\tools.json`; the editable NATO
-alphabet mapping is in `core\nato_alphabet.json`. Use `--config` to select
+alphabet mapping is in `tools\nato_alphabet.json`. Use `--config` to select
 another config file; its alphabet path is relative to that file. Tool names
 must be in the built-in registry. Use `--device cpu` to select CPU inference.
 

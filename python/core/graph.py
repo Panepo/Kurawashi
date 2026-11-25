@@ -20,6 +20,9 @@ from agent_framework import (
     handler,
 )
 
+from tools.query_driver_license import query_driver_license
+from tools.query_license_plate import query_license_plate
+
 
 class ToolBackend(Protocol):
     def chat_with_tools(
@@ -286,9 +289,9 @@ class _ToolExecutor(Executor):
                 if not re.fullmatch(r"[^\W\d_]+(?:[ -][^\W\d_]+)*", region):
                     raise ValueError("State must contain letters, spaces, or hyphens.")
                 _assert_in_source(region, state.source, "state")
-            result = {"license_plate_number": normalised, "state": region}
+            result = query_license_plate(normalised, region)
         else:
-            result = {"driver_license_number": normalised}
+            result = query_driver_license(normalised)
         tool_message = Message("tool", [Content.from_function_result(
             call.call_id, result=result
         )])
